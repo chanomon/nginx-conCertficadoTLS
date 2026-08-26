@@ -1,0 +1,33 @@
+# Claves privadas y certificados
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.csr
+*.crt
+*.cer
+
+# Configuración local y secretos de Kubernetes
+kubeconfig
+*.kubeconfig
+*-secret.yaml
+*.secret.yaml
+secrets/
+.env
+.env.*
+!.env.example
+
+# Editores y sistema operativo
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Archivos temporales
+*.log
+*.tmp
+*.bak
