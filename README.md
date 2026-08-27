@@ -2,6 +2,121 @@
 
 Este proyecto despliega una aplicación Nginx sencilla en Kubernetes y la publica mediante HTTPS usando un `Ingress` de Traefik. Está pensado principalmente para pruebas locales con k3s y el dominio `mi-app.local`.
 
+## Objetivo del proyecto
+
+El objetivo es aprender cómo Kubernetes publica una aplicación web mediante HTTPS y cómo se relacionan algunos de sus recursos principales. En este ejemplo:
+
+- Nginx representa nuestra aplicación web.
+- Un `Deployment` mantiene la aplicación funcionando.
+- Un `Service` proporciona una dirección estable dentro del clúster.
+- Un `Ingress` publica la aplicación fuera del clúster.
+- Traefik recibe las peticiones y gestiona la conexión HTTPS.
+- Un `Secret` almacena el certificado TLS y su clave privada.
+
+Este proyecto **utiliza un certificado existente**, pero todavía no lo genera ni lo renueva automáticamente. La automatización de certificados con herramientas como cert-manager se plantea como un paso posterior.
+
+## Explicación para principiantes
+
+Puedes imaginar un clúster de Kubernetes como un pequeño centro comercial y la aplicación como una tienda llamada `mi-app.local`. Kubernetes organiza la tienda, mantiene copias disponibles y decide cómo llegan los visitantes hasta ella.
+
+### Pod: donde se ejecuta la aplicación
+
+Un **Pod** es una de las unidades básicas de Kubernetes. Dentro de un Pod se ejecutan uno o más contenedores. En este proyecto, cada Pod contiene un servidor web basado en la imagen `nginx:alpine`.
+
+Los Pods son temporales: pueden fallar, eliminarse y volver a crearse con otra dirección IP. Por esa razón normalmente no se administran de forma manual ni se accede directamente a ellos.
+
+### Deployment: mantiene los Pods funcionando
+
+El `Deployment` llamado `https-test-app` declara que deben existir dos réplicas de Nginx:
+
+```yaml
+spec:
+  replicas: 2
+```
+
+Kubernetes intenta conservar siempre ese **estado deseado**:
+
+```text
+Deployment https-test-app
+├── Pod con Nginx
+└── Pod con Nginx
+```
+
+Si uno de los Pods falla, el Deployment solicita la creación de otro. Esta es una idea central de Kubernetes: nosotros describimos cómo queremos que se vea el sistema y Kubernetes trabaja continuamente para mantenerlo así.
+
+### Service: una dirección estable para los Pods
+
+Como los Pods pueden cambiar, el `Service` llamado `https-test-service` proporciona un punto de acceso estable dentro del clúster. Encuentra los Pods mediante la etiqueta `app: https-test`:
+
+```text
+Service https-test-service
+├── Pod con la etiqueta app=https-test
+└── Pod con la etiqueta app=https-test
+```
+
+Cuando el Service recibe una petición, puede enviarla a cualquiera de los dos Pods. De esta manera, otros componentes no necesitan conocer la dirección individual de cada Pod.
+
+### Ingress: la entrada a la aplicación
+
+El Service permite llegar a Nginx desde dentro del clúster. Para publicar la aplicación se utiliza el `Ingress` llamado `https-test-ingress`, que contiene una regla para el dominio `mi-app.local`.
+
+Un Ingress es un conjunto de reglas; necesita un **Ingress Controller** para ejecutarlas. En este proyecto se utiliza Traefik, incluido de manera predeterminada en k3s. Traefik actúa como el recepcionista del clúster: recibe una petición, examina su dominio y la dirige al Service correcto.
+
+```text
+Petición para mi-app.local
+            │
+            ▼
+     Traefik / Ingress
+            │
+            ▼
+ https-test-service
+       ┌────┴────┐
+       ▼         ▼
+   Pod Nginx  Pod Nginx
+```
+
+### Secret: dónde se guarda el certificado
+
+Para establecer una conexión HTTPS se necesitan un certificado y su clave privada:
+
+```text
+tls.crt → certificado público
+tls.key → clave privada y sensible
+```
+
+El comando de despliegue guarda ambos archivos en un `Secret` de tipo TLS llamado `mi-app-tls`. El Ingress hace referencia a ese Secret para que Traefik pueda presentar el certificado al visitante.
+
+> **Importante:** un Secret de Kubernetes permite separar información sensible de los manifiestos de la aplicación, pero su contenido no está necesariamente cifrado dentro del clúster. En un entorno real también se deben configurar controles de acceso y cifrado, o utilizar un gestor de secretos.
+
+### Recorrido completo de una petición
+
+Cuando se visita `https://mi-app.local`, sucede lo siguiente:
+
+1. La computadora resuelve `mi-app.local` hacia la dirección de entrada del clúster.
+2. La petición llega a Traefik.
+3. Traefik obtiene el certificado desde el Secret `mi-app-tls` y establece la conexión HTTPS.
+4. La regla del Ingress envía la petición al Service `https-test-service`.
+5. El Service selecciona uno de los Pods de Nginx.
+6. Nginx genera la respuesta, que regresa al visitante a través de Traefik.
+
+La conexión HTTPS termina en Traefik. Dentro de este ejemplo, Traefik se comunica con Nginx mediante HTTP:
+
+```text
+Cliente ── HTTPS ──> Traefik ── HTTP ──> Service ──> Pod Nginx
+```
+
+Este patrón se conoce como **terminación TLS**. Gracias a él, cada Pod no necesita configurar su propia copia del certificado.
+
+### ¿Qué hace `kubectl apply`?
+
+Al ejecutar:
+
+```bash
+kubectl apply -f app-with-https.yaml
+```
+
+se le pide a Kubernetes que lea el manifiesto y cree o actualice los recursos descritos. Kubernetes compara el archivo con el estado actual del clúster y realiza los cambios necesarios.
+
 ## Componentes
 
 El manifiesto [`app-with-https.yaml`](./app-with-https.yaml) crea los siguientes recursos en el namespace `default`:
@@ -10,12 +125,12 @@ El manifiesto [`app-with-https.yaml`](./app-with-https.yaml) crea los siguientes
 - **Service `https-test-service`**: expone internamente Nginx por el puerto 80.
 - **Ingress `https-test-ingress`**: publica el servicio bajo `mi-app.local`, configura TLS y solicita a Traefik la redirección de HTTP a HTTPS.
 
-El repositorio también contiene:
+Para crear el Secret también debes proporcionar:
 
-- `tls.crt`: certificado autofirmado para `mi-app.local`.
-- `tls.key`: clave privada correspondiente al certificado.
+- `tls.crt`: un certificado para `mi-app.local`.
+- `tls.key`: la clave privada correspondiente al certificado.
 
-> **Importante:** `tls.key` es material sensible. No debe compartirse ni almacenarse en un repositorio público. En un entorno real conviene administrar los certificados con cert-manager o con un gestor de secretos.
+Estos archivos no están incluidos en el repositorio. `tls.key` es material sensible y no debe compartirse ni almacenarse en un repositorio público.
 
 ## Requisitos
 
@@ -76,7 +191,7 @@ El repositorio también contiene:
    curl -k https://mi-app.local
    ```
 
-La opción `-k` es necesaria porque el certificado incluido es autofirmado y no pertenece a una autoridad de certificación de confianza.
+Si utilizas un certificado autofirmado, la opción `-k` permite hacer la prueba sin que `curl` rechace el certificado por no pertenecer a una autoridad de confianza. Utilízala únicamente en entornos de prueba.
 
 ## Verificación
 
@@ -99,14 +214,31 @@ Para inspeccionar los logs de Nginx:
 kubectl logs -l app=https-test -n default --tail=100
 ```
 
-## Información del certificado incluido
+## Requisitos del certificado
 
-- Nombre común (CN): `mi-app.local`
-- Emisor: autofirmado
-- Vigencia: del 4 de julio de 2026 al 4 de julio de 2027 (UTC)
-- La clave privada corresponde al certificado.
+El certificado que proporciones debe corresponder a su clave privada y debe incluir `DNS:mi-app.local` en la extensión **Subject Alternative Name (SAN)**. Los clientes modernos validan el SAN y pueden rechazar certificados que solamente contengan un nombre común (CN).
 
-El certificado no contiene la extensión **Subject Alternative Name (SAN)**. Algunos clientes modernos pueden rechazarlo incluso si se instala como certificado de confianza. Para uso más allá de una prueba básica, genera un certificado nuevo que incluya `DNS:mi-app.local` en SAN.
+Puedes inspeccionar un certificado antes de crear el Secret con:
+
+```bash
+openssl x509 -in tls.crt -noout -subject -issuer -dates -ext subjectAltName
+```
+
+## Alcance actual de la gestión de certificados
+
+En este momento el proceso es manual:
+
+```text
+El usuario obtiene o genera el certificado
+                  │
+                  ▼
+      Lo guarda en un Secret TLS
+                  │
+                  ▼
+         Traefik utiliza el Secret
+```
+
+El proyecto sabe almacenar y utilizar un certificado, pero no emitirlo ni renovarlo. Una evolución natural consiste en instalar **cert-manager** y definir un `Issuer` o `ClusterIssuer`. cert-manager podría solicitar o generar el certificado, guardarlo en el Secret y renovarlo antes de que expire.
 
 ## Eliminación
 
